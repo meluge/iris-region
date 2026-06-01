@@ -6,6 +6,7 @@
 
 src/lang.v
 src/typing.v
+src/typing_tt.v
 src/lang_handle.v
 src/typing_handle.v
 src/notation.v
