@@ -9,3 +9,8 @@
 Makefile.coq
 Makefile.coq.conf
 .lia.cache
+# editor / agent
+.claude/
+.vscode/
+# the Tofte-Talpin paper
+tofte-talpin-iandc97.pdf
