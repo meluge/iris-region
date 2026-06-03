@@ -1,150 +1,139 @@
+From iris.proofmode Require Import proofmode.
 From iris.program_logic Require Export weakestpre.
-From iris.proofmode Require Import tactics.
 From iris.program_logic Require Import ectx_lifting.
-From iris_simp_lang Require Import notation tactics class_instances.
-From iris_simp_lang Require Import heap_lib.
-From iris Require Import options.
+From iris.base_logic.lib Require Import ghost_map.
+From iris_simp_lang Require Import lang.
+From iris.prelude Require Import options.
 
-(*|
-This is one of the most interesting parts of the instantiation. Now that we have
-a syntax and semantics, we want a program logic. There's exactly one more thing
-Iris needs before we can define weakest preconditions: a **state
-interpretation**. This is a function from state (recall, just a heap for
-simp_lang) to iProp Σ. The way this plugs into Iris is by instantiating the
-`irisGS simp_lang Σ` typeclass, which is an assumption for `wp`, the generic
-definition of weakest preconditions (this is the definition you usually interact
-with through either the `WP` notation or "Texan" Hoare-triple notation).
-
-The state interpretation for simp_lang maps `gmap loc val` into an appropriate
-RA. Most of the definition is related to `heap_mapG`, which is defined in
-`heap_ra.v`. We can think of the state interpretation as being an invariant
-maintained by the weakest precondition, except that it is a function of the
-state and thus has meaning tied to the program execution. Therefore we pick an
-RA which is like an auth of a gmap for the state interpretation and map `σ :
-gmap loc val` to something like `own γ (●σ)`. Then we can use fragments to
-define the core points-to connective for this language, something like `l ↦ v :=
-own γ (◯{|l := v|})`.
-
-When we prove the WP for an atomic language primitive, we'll prove it more
-directly than usual. The proof obligation will be to transform the state
-interpretation of `σ` to the state interpretation of some `σ'` that's a valid
-transition of the primitive. It's here that we'll **update the ghost state** to
-match transitions like allocation and use agreement between the auth and
-fragments to prove the WP for loads, for example. These are the most interesting
-proofs about the language because they don't just reason about pure reduction
-steps but actually have to make use of the logic and the ghost state we set up
-to reason about its state --- the purely functional part of the language clearly
-doesn't need separation logic!
-
-The code implements this with two differences. First, the RA we actually use in
-`heap_ra.` is an Iris library `gmap_viewR loc val` which uses a generalization
-of auth called views. The important point is that the auth component is the
-state's heap and the fragments are sub-heaps; the view RA keeps track of the
-fact that the composition of all the fragments is a sub-heap of the
-authoritative element. It also adds something called discardable fractions, a
-generalization of the fraction RA, in order to model fractional and persistent
-permissions to heap locations, but we can mostly ignore this complication.
-
-Second, there's a pesky ghost name `γ` in the informal definitions above. These
-are hidden away in the `simpGS` typeclass as part of `heap_mapG` that all proofs
-about this language will carry. It'll be fixed once before any execution by the
-adequacy theorem, as you'll see in adequacy.v. After that we get it through a
-typeclass to avoid mentioning it explicitly in any proofs.
-
-If you were writing your own language, you would probably start with `heap_mapG`
-from the Iris standard library to get all the nice features and lemmas for the
-heap part of the state interpretation. Then you could add other algebras and
-global ghost names to the equivalent of `simpGS`, as long as you also instantiate
-them in `adequacy.v`.
-|*)
+(** * Program logic for reglang
 
 
-Class simpGS Σ := SimpGS {
-  simp_invGS : invGS Σ;
-  simp_heap_mapG :: heap_mapGS loc val Σ;
+  state_interp (heap, alive) := ●heap @ γ_h  ∗  ●alive @ γ_a
+
+  (ρ,ℓ) ↦ v  := ◯{(ρ,ℓ) := v} @ γ_h        (a heap points-to)
+  is_alive ρ := ◯{ρ := true}    @ γ_a        (the liveness token for ρ)
+
+We implement with ghost_maps.  *)
+
+(** Ghost state: two [ghost_map]s, for the heap and the aliveness map. *)
+Class regGpreS (Σ : gFunctors) := {
+  regGpreS_heap :: ghost_mapG Σ (region * loc) val;
+  regGpreS_alive :: ghost_mapG Σ region bool;
 }.
 
-(* Observe that this instance assumes [simpGS Σ], which already has a fixed ghost
-name for the heap ghost state. We'll see in adequacy.v how to obtain a [simpGS Σ]
-after allocating that ghost state. *)
-Global Instance simpGS_irisGS `{!simpGS Σ} : irisGS simp_lang Σ := {
-  iris_invGS := simp_invGS;
-  state_interp σ _ κs _ := (heap_map_interp σ.(heap))%I;
+Class regGS (Σ : gFunctors) := RegGS {
+  reg_invGS : invGS Σ;
+  reg_heapGS :: ghost_mapG Σ (region * loc) val;
+  reg_aliveGS :: ghost_mapG Σ region bool;
+  reg_heap_name : gname;
+  reg_alive_name : gname;
+}.
+
+
+Notation γ_h := reg_heap_name (only parsing).
+Notation γ_a := reg_alive_name (only parsing).
+
+Definition regΣ : gFunctors :=
+  #[ invΣ; ghost_mapΣ (region * loc) val; ghost_mapΣ region bool ].
+
+Section definitions.
+  Context `{!regGS Σ}.
+
+  Definition pointsto (rl : region * loc) (v : val) : iProp Σ :=
+    rl ↪[reg_heap_name] v.
+
+  Definition is_alive (ρ : region) : iProp Σ :=
+    ρ ↪[reg_alive_name] true.
+End definitions.
+
+Notation "rl ↦ v" := (pointsto rl v) (at level 20) : bi_scope.
+
+Global Instance regGS_irisGS `{!regGS Σ} : irisGS reg_lang Σ := {
+  iris_invGS := reg_invGS;
+  state_interp σ _ _ _ :=
+    (ghost_map_auth reg_heap_name 1 σ.(heap) ∗
+     ghost_map_auth reg_alive_name 1 σ.(alive))%I;
   fork_post _ := True%I;
-  (* These two fields are for a new feature that makes the number of laters per
-  physical step flexible; picking 0 here means we get just one later per
-  physical step, as older versions of Iris had. This is the same way heap_lang
-  works. *)
-  num_laters_per_step _ := 0;
+  num_laters_per_step _ := 0%nat;
   state_interp_mono _ _ _ _ := fupd_intro _ _
 }.
 
-Notation "l ↦ v" := (pointsto l v)
-  (at level 20, format "l  ↦  v") : bi_scope.
-
 Section lifting.
-Context `{!simpGS Σ}.
+Context `{!regGS Σ}.
 Implicit Types P Q : iProp Σ.
 Implicit Types Φ Ψ : val → iProp Σ.
-Implicit Types efs : list expr.
 Implicit Types σ : state.
-Implicit Types v : val.
+Implicit Types v w : val.
+Implicit Types ρ : region.
 Implicit Types l : loc.
 
-(** Fork: Not using Texan triples to avoid some unnecessary [True] *)
-Lemma wp_fork s E e Φ :
-  ▷ WP e @ s; ⊤ {{ _, True }} -∗ ▷ Φ (LitV LitUnit) -∗ WP Fork e @ s; E {{ Φ }}.
+Lemma is_alive_agree m ρ :
+  ghost_map_auth reg_alive_name 1 m -∗ is_alive ρ -∗ ⌜m !! ρ = Some true⌝.
+Proof. iIntros "Ha Hρ". iApply (ghost_map_lookup with "Ha Hρ"). Qed.
+
+Lemma pointsto_agree m rl v :
+  ghost_map_auth reg_heap_name 1 m -∗ rl ↦ v -∗ ⌜m !! rl = Some v⌝.
+Proof. iIntros "Hh Hrl". iApply (ghost_map_lookup with "Hh Hrl"). Qed.
+
+
+Lemma wp_alloc s E ρ v :
+  {{{ is_alive ρ }}}
+    Alloc (RName ρ) (Val v) @ s; E
+  {{{ l, RET (RefV ρ l); is_alive ρ ∗ (ρ, l) ↦ v }}}.
 Proof.
-  iIntros "He HΦ". iApply wp_lift_atomic_base_step; [done|].
-  iIntros (σ1 κ κs n nt) "Hσ !>"; iSplit; first by eauto with base_step.
-  iIntros "!>" (v2 σ2 efs Hstep) "_Hcred"; inv_base_step. by iFrame.
+  iIntros (Φ) "Hal HΦ".
+  iApply wp_lift_atomic_base_step_no_fork; first done.
+  iIntros (σ1 ns κ κs nt) "[Hh Ha] !>".
+  iDestruct (is_alive_agree with "Ha Hal") as %Hal.
+  iSplit. { iPureIntro. eexists _, _, _, _. by eapply alloc_fresh. }
+  iIntros "!>" (e2 σ2 efs Hstep) "_". inversion Hstep; simplify_eq.
+  iMod (ghost_map_insert _ v with "Hh") as "[Hh Hpt]"; first done.
+  iModIntro. iSplit; first done. iFrame "Hh Ha". iApply "HΦ". by iFrame.
 Qed.
 
-(** Heap *)
-
-Lemma wp_alloc s E v :
-  {{{ True }}} Alloc (Val v) @ s; E
-  {{{ l, RET LitV (LitInt l); l ↦ v }}}.
+Lemma wp_load s E ρ l v :
+  {{{ is_alive ρ ∗ (ρ, l) ↦ v }}}
+    Load (Val (RefV ρ l)) @ s; E
+  {{{ RET v; is_alive ρ ∗ (ρ, l) ↦ v }}}.
 Proof.
-  iIntros (Φ) "_ HΦ". iApply wp_lift_atomic_base_step_no_fork; first done.
-  iIntros (σ1 κ κs n nt) "Hσ !>"; iSplit; first by auto with base_step.
-  iIntros "!>" (v2 σ2 efs Hstep) "_Hcred"; inv_base_step.
-  iMod (heap_map_alloc σ1.(heap) _ _ with "Hσ") as "[Hσ Hl]"; first done.
-  iModIntro; iSplit=> //. iFrame. by iApply "HΦ".
+  iIntros (Φ) "[Hal Hpt] HΦ".
+  iApply wp_lift_atomic_base_step_no_fork; first done.
+  iIntros (σ1 ns κ κs nt) "[Hh Ha] !>".
+  iDestruct (is_alive_agree with "Ha Hal") as %Hal.
+  iDestruct (pointsto_agree with "Hh Hpt") as %Hhl.
+  iSplit. { iPureIntro. eexists _, _, _, _. by eapply LoadS. }
+  iIntros "!>" (e2 σ2 efs Hstep) "_". inversion Hstep; simplify_eq.
+  iModIntro. iSplit; first done. iFrame "Hh Ha". iApply "HΦ". by iFrame.
 Qed.
 
-Lemma wp_load s E l v :
-  {{{ l ↦ v }}} Load (Val $ LitV $ LitInt l) @ s; E {{{ RET v; l ↦ v }}}.
+Lemma wp_store s E ρ l v w :
+  {{{ is_alive ρ ∗ (ρ, l) ↦ v }}}
+    Store (Val (RefV ρ l)) (Val w) @ s; E
+  {{{ RET (UnitV); is_alive ρ ∗ (ρ, l) ↦ w }}}.
 Proof.
-  iIntros (Φ) "Hl HΦ". iApply wp_lift_atomic_base_step_no_fork; first done.
-  iIntros (σ1 κ κs n nt) "Hσ !>". iDestruct (heap_map_valid with "Hσ Hl") as %?.
-  iSplit; first by eauto with base_step.
-  iNext. iIntros (v2 σ2 efs Hstep) "_Hcred"; inv_base_step.
-  iModIntro; iSplit=> //. iFrame. by iApply "HΦ".
+  iIntros (Φ) "[Hal Hpt] HΦ".
+  iApply wp_lift_atomic_base_step_no_fork; first done.
+  iIntros (σ1 ns κ κs nt) "[Hh Ha] !>".
+  iDestruct (is_alive_agree with "Ha Hal") as %Hal.
+  iDestruct (pointsto_agree with "Hh Hpt") as %Hhl.
+  iSplit. { iPureIntro. eexists _, _, _, _. by eapply StoreS. }
+  iIntros "!>" (e2 σ2 efs Hstep) "_". inversion Hstep; simplify_eq.
+  iMod (ghost_map_update w with "Hh Hpt") as "[Hh Hpt]".
+  iModIntro. iSplit; first done. iFrame "Hh Ha". iApply "HΦ". by iFrame.
 Qed.
 
-Lemma wp_store s E l v w :
-  {{{ l ↦ v }}} Store (Val $ LitV $ LitInt l) (Val $ w) @ s; E {{{ RET #(); l ↦ w }}}.
-Proof.
-  iIntros (Φ) "Hl HΦ". iApply wp_lift_atomic_base_step_no_fork; first done.
-  iIntros (σ1 κ κs n nt) "Hσ !>". iDestruct (heap_map_valid with "Hσ Hl") as %?.
-  iSplit; first by eauto with base_step.
-  iNext. iIntros (v2 σ2 efs Hstep) "_Hcred"; inv_base_step.
-  iMod (heap_map_update _ _ _ w with "Hσ Hl") as "[Hσ Hl]".
-  iModIntro; iSplit=> //. iFrame. by iApply "HΦ".
-Qed.
+Lemma wp_endregion_val s E ρ v Φ :
+  is_alive ρ -∗ Φ v -∗ WP EndRegion ρ (Val v) @ s; E {{ Φ }}.
+Proof. Admitted.
 
-Lemma wp_faa s E l (n1 n2: Z) :
-  {{{ l ↦ #n1 }}}
-    FAA (Val $ LitV $ LitInt l) (Val $ LitV $ LitInt $ n2) @ s; E
-  {{{ RET #n1; l ↦ #(n1+n2) }}}.
-Proof.
-  iIntros (Φ) "Hl HΦ". iApply wp_lift_atomic_base_step_no_fork; first done.
-  iIntros (σ1 κ κs n nt) "Hσ !>". iDestruct (heap_map_valid with "Hσ Hl") as %?.
-  iSplit; first by eauto with base_step.
-  iNext. iIntros (v2 σ2 efs Hstep) "_Hcred"; inv_base_step.
-  iMod (heap_map_update _ _ _ #(n1 + n2) with "Hσ Hl") as "[Hσ Hl]".
-  iModIntro; iSplit=> //. iFrame. by iApply "HΦ".
-Qed.
+Lemma wp_letregion s E x e Φ :
+  (∀ ρ, is_alive ρ -∗ WP EndRegion ρ (subst_region' x ρ e) @ s; E {{ Φ }}) -∗
+  WP LetRegion x e @ s; E {{ Φ }}.
+Proof. Admitted.
+
+Lemma wp_region s E x e Φ :
+  (∀ ρ, is_alive ρ -∗ WP subst_region' x ρ e @ s; E {{ v, is_alive ρ ∗ Φ v }}) -∗
+  WP LetRegion x e @ s; E {{ Φ }}.
+Proof. Admitted.
 
 End lifting.

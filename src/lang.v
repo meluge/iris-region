@@ -64,7 +64,7 @@ with val :=
   | InjRV (v : val)
   | RecV (f x : binder) (e : expr)
   | RefV (ρ : region) (l : loc)     
-.
+.   
 
 Bind Scope expr_scope with expr.
 Bind Scope val_scope with val.
