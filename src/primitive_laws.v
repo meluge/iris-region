@@ -124,16 +124,47 @@ Qed.
 
 Lemma wp_endregion_val s E ρ v Φ :
   is_alive ρ -∗ Φ v -∗ WP EndRegion ρ (Val v) @ s; E {{ Φ }}.
-Proof. Admitted.
+Proof.
+  iIntros "Hal HΦ".
+  iApply wp_lift_atomic_base_step_no_fork; first done.
+  iIntros (σ1 ns κ κs nt) "[Hh Ha] !>".
+  iDestruct (is_alive_agree with "Ha Hal") as %Hal.
+  iSplit. { iPureIntro. eexists _, _, _, _. by eapply EndRegionS. }
+  iIntros "!>" (e2 σ2 efs Hstep) "_". inversion Hstep; simplify_eq.
+  iMod (ghost_map_update false with "Ha Hal") as "[Ha _]".
+  iModIntro. iSplit; first done. iFrame "Hh Ha". iApply "HΦ".
+Qed.
+
 
 Lemma wp_letregion s E x e Φ :
   (∀ ρ, is_alive ρ -∗ WP EndRegion ρ (subst_region' x ρ e) @ s; E {{ Φ }}) -∗
   WP LetRegion x e @ s; E {{ Φ }}.
-Proof. Admitted.
+Proof.
+  iIntros "H".
+  iApply wp_lift_base_step; first done.
+  iIntros (σ1 ns κ κs nt) "[Hh Ha]".
+  iApply fupd_mask_intro; first set_solver. iIntros "Hclose".
+  iSplit. { iPureIntro. eexists _, _, _, _. eapply letregion_step_fresh. }
+  iIntros "!>" (e2 σ2 efs Hstep) "_". inversion Hstep; simplify_eq.
+  iMod "Hclose" as "_".
+  iMod (ghost_map_insert _ true with "Ha") as "[Ha Hal]"; first done.
+  iModIntro. iFrame "Hh Ha". iSplitL "H Hal".
+  - iApply ("H" with "Hal").
+  - done. 
+Qed.
+
 
 Lemma wp_region s E x e Φ :
   (∀ ρ, is_alive ρ -∗ WP subst_region' x ρ e @ s; E {{ v, is_alive ρ ∗ Φ v }}) -∗
   WP LetRegion x e @ s; E {{ Φ }}.
-Proof. Admitted.
+Proof.
+  iIntros "H". iApply wp_letregion. iIntros (ρ) "Hal".
+  change (EndRegion ρ (subst_region' x ρ e))
+    with (fill [EndRegionCtx ρ] (subst_region' x ρ e)).
+  iApply wp_bind.
+  iApply (wp_wand with "[H Hal]").
+  - by iApply ("H" $! ρ with "Hal").
+  - iIntros (v) "[Hal HΦ] /=". iApply (wp_endregion_val with "Hal HΦ").
+Qed.
 
 End lifting.

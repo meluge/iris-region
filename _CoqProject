@@ -5,21 +5,15 @@
 -arg -w -arg -deprecated-since-8.19
 
 src/lang.v
+src/tactics.v
 src/typing.v
 src/typing_tt.v
 src/lang_handle.v
 src/typing_handle.v
-src/notation.v
-src/tactics.v
-src/class_instances.v
-src/heap_ra.v
-src/heap_lib.v
 src/primitive_laws.v
+src/primitive_laws_verbose.v
+src/metatheory.v
+src/class_instances.v
 src/proofmode.v
-src/simp.v
+src/logrel.v
 src/adequacy.v
-
-src/examples/swap.v
-src/examples/spawn.v
-src/examples/par.v
-src/examples/parallel_add.v

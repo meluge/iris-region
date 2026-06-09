@@ -1,4 +1,7 @@
-From iris_simp_lang Require Import notation tactics.
+From stdpp Require Import fin_maps.
+From iris.program_logic Require Import ectx_language ectxi_language language.
+From iris_simp_lang Require Import tactics.   (* inv_base_step *)
+From iris_simp_lang Require Import lang.
 From iris.prelude Require Import options.
 
 (*|
@@ -14,13 +17,11 @@ executes to `e2` in `n` steps. This is eventually needed to define a tactic
 `wp_pure`).
 |*)
 
-
 Global Instance into_val_val v : IntoVal (Val v) v.
 Proof. done. Qed.
 Global Instance as_val_val v : AsVal (Val v).
 Proof. by eexists. Qed.
 
-(** * Instances of the [Atomic] class *)
 Section atomic.
   Local Ltac solve_atomic :=
     apply strongly_atomic_atomic, ectx_language_atomic;
@@ -29,24 +30,29 @@ Section atomic.
 
   Global Instance rec_atomic s f x e : Atomic s (Rec f x e).
   Proof. solve_atomic. Qed.
-  (** The instance below is a more general version of [Skip] *)
-  Global Instance beta_atomic s f x v1 v2 : Atomic s (App (RecV f x (Val v1)) (Val v2)).
+  Global Instance beta_atomic s f x v1 v2 :
+    Atomic s (App (Val (RecV f x (Val v1))) (Val v2)).
   Proof. destruct f, x; solve_atomic. Qed.
-  Global Instance unop_atomic s op v : Atomic s (UnOp op (Val v)).
+
+  Global Instance pair_atomic s v1 v2 : Atomic s (Pair (Val v1) (Val v2)).
   Proof. solve_atomic. Qed.
-  Global Instance binop_atomic s op v1 v2 : Atomic s (BinOp op (Val v1) (Val v2)).
+  Global Instance fst_atomic s v : Atomic s (Fst (Val v)).
   Proof. solve_atomic. Qed.
-  Global Instance if_true_atomic s v1 e2 :
-    Atomic s (If (Val $ LitV $ LitBool true) (Val v1) e2).
+  Global Instance snd_atomic s v : Atomic s (Snd (Val v)).
   Proof. solve_atomic. Qed.
-  Global Instance if_false_atomic s e1 v2 :
-    Atomic s (If (Val $ LitV $ LitBool false) e1 (Val v2)).
+  Global Instance injl_atomic s v : Atomic s (InjL (Val v)).
+  Proof. solve_atomic. Qed.
+  Global Instance injr_atomic s v : Atomic s (InjR (Val v)).
   Proof. solve_atomic. Qed.
 
-  Global Instance fork_atomic s e : Atomic s (Fork e).
-  Proof. solve_atomic. Qed.
 
-  Global Instance heap_op_atomic op s v1 v2 : Atomic s (HeapOp op (Val v1) (Val v2)).
+  Global Instance alloc_atomic s ρ v : Atomic s (Alloc (RName ρ) (Val v)).
+  Proof. solve_atomic. Qed.
+  Global Instance load_atomic s v : Atomic s (Load (Val v)).
+  Proof. solve_atomic. Qed.
+  Global Instance store_atomic s v1 v2 : Atomic s (Store (Val v1) (Val v2)).
+  Proof. solve_atomic. Qed.
+  Global Instance endregion_atomic s ρ v : Atomic s (EndRegion ρ (Val v)).
   Proof. solve_atomic. Qed.
 End atomic.
 
@@ -65,6 +71,7 @@ not if [v] contains a lambda/rec that is hidden behind a definition.
 
 To make sure that [wp_rec] and [wp_lam] do reduce lambdas/recs that are hidden
 behind a definition, we activate [AsRecV_recv] by hand in these tactics. *)
+
 Class AsRecV (v : val) (f x : binder) (erec : expr) :=
   as_recv : v = RecV f x erec.
 Global Hint Mode AsRecV ! - - - : typeclass_instances.
@@ -86,24 +93,27 @@ Section pure_exec.
     PureExec True 1 (App (Val v1) (Val v2)) (subst' x v2 (subst' f v1 erec)).
   Proof. unfold AsRecV in *. solve_pure_exec. Qed.
 
-  Global Instance pure_unop op v v' :
-    PureExec (un_op_eval op v = Some v') 1 (UnOp op (Val v)) (Val v').
+  Global Instance pure_pair (v1 v2 : val) :
+    PureExec True 1 (Pair (Val v1) (Val v2)) (Val $ PairV v1 v2).
+  Proof. solve_pure_exec. Qed.
+  Global Instance pure_fst (v1 v2 : val) :
+    PureExec True 1 (Fst (Val $ PairV v1 v2)) (Val v1).
+  Proof. solve_pure_exec. Qed.
+  Global Instance pure_snd (v1 v2 : val) :
+    PureExec True 1 (Snd (Val $ PairV v1 v2)) (Val v2).
   Proof. solve_pure_exec. Qed.
 
-  Global Instance pure_binop op v1 v2 v' :
-    PureExec (bin_op_eval op v1 v2 = Some v') 1 (BinOp op (Val v1) (Val v2)) (Val v') | 10.
+  Global Instance pure_injl (v : val) :
+    PureExec True 1 (InjL (Val v)) (Val $ InjLV v).
   Proof. solve_pure_exec. Qed.
-  (* Higher-priority instance for [EqOp]. *)
-  Global Instance pure_eqop v1 v2 :
-    PureExec True 1
-      (BinOp EqOp (Val v1) (Val v2))
-      (Val $ LitV $ LitBool $ bool_decide (v1 = v2)) | 1.
+  Global Instance pure_injr (v : val) :
+    PureExec True 1 (InjR (Val v)) (Val $ InjRV v).
   Proof. solve_pure_exec. Qed.
 
-  Global Instance pure_if_true e1 e2 :
-    PureExec True 1 (If (Val $ LitV $ LitBool true) e1 e2) e1.
+  Global Instance pure_case_inl (v : val) x1 e1 x2 e2 :
+    PureExec True 1 (Case (Val $ InjLV v) x1 e1 x2 e2) (subst' x1 v e1).
   Proof. solve_pure_exec. Qed.
-  Global Instance pure_if_false e1 e2 :
-    PureExec True 1 (If (Val $ LitV $ LitBool false) e1 e2) e2.
+  Global Instance pure_case_inr (v : val) x1 e1 x2 e2 :
+    PureExec True 1 (Case (Val $ InjRV v) x1 e1 x2 e2) (subst' x2 v e2).
   Proof. solve_pure_exec. Qed.
 End pure_exec.

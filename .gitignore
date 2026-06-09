@@ -14,3 +14,6 @@ Makefile.coq.conf
 .vscode/
 # the Tofte-Talpin paper
 tofte-talpin-iandc97.pdf
+# agent scratch folder
+6a1ea5ef7561d2fded046e30/
+src/primitive_laws_verbose.v
